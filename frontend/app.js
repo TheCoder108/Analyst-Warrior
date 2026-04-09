@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const page = document.body.dataset.page || "match";
   const assetBase = location.pathname.includes("/frontend/") ? "../backend/static" : "/static";
   const MAP_PASSWORD = "warrior_is_op";
@@ -20,8 +20,7 @@
   const NAV_ITEMS = [
     { key: "match", label: "MATCH", href: "index.html" },
     { key: "maps", label: "MAPS", href: "maps.html" },
-    { key: "teams", label: "TEAMS", href: "teams.html" },
-    { key: "teamstats", label: "TEAM STATS", href: "performance.html" },
+    { key: "teams", label: "TEAMS & STATS", href: "teams.html" },
     { key: "export", label: "EXPORT", href: "export.html" }
   ];
   const TOOL_SHORTCUTS = {
@@ -78,6 +77,35 @@
   let dbPromise = null;
   let zoneWheelUndoTimer = null;
 
+  // Auth helpers
+  function getAuthToken() {
+    return localStorage.getItem('aw_token') || sessionStorage.getItem('aw_token') || '';
+  }
+  function getAuthUser() {
+    return localStorage.getItem('aw_user') || sessionStorage.getItem('aw_user') || 'Guest';
+  }
+  function isLoggedIn() {
+    return !!getAuthToken();
+  }
+  function logout() {
+    const tok = getAuthToken();
+    if (tok) {
+      fetch('/api/auth/logout', { method: 'POST', headers: { 'X-Auth-Token': tok } }).catch(() => {});
+    }
+    localStorage.removeItem('aw_token');
+    localStorage.removeItem('aw_user');
+    localStorage.removeItem('aw_admin');
+    sessionStorage.removeItem('aw_token');
+    sessionStorage.removeItem('aw_user');
+    sessionStorage.removeItem('aw_admin');
+    window.location.href = 'login.html';
+  }
+
+  // Redirect performance page to teams (merged)
+  if (page === "performance" || page === "teamstats") {
+    window.location.replace("teams.html");
+  }
+
   renderAppShell();
   setBrandLogo();
   bindSharedEvents();
@@ -89,17 +117,47 @@
     refreshPage = renderMapsPage;
     renderMapsPage();
   } else if (page === "teams") {
-    refreshPage = renderTeamsPage;
-    renderTeamsPage();
-  } else if (page === "performance" || page === "teamstats") {
-    refreshPage = renderTeamStatsPage;
-    renderTeamStatsPage();
+    refreshPage = renderTeamsAndStatsPage;
+    renderTeamsAndStatsPage();
   } else if (page === "export") {
     refreshPage = renderExportPage;
     renderExportPage();
   }
 
   requestAnimationFrame(() => document.body.classList.add("ready"));
+
+  // ── Ripple effect on all buttons ──────────────────────────────────
+  document.addEventListener("pointerdown", (e) => {
+    const btn = e.target.closest(".action-btn, .top-btn, .mini-btn, .page-link, .sub-tab");
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const ripple = document.createElement("span");
+    const size = Math.max(rect.width, rect.height) * 1.8;
+    ripple.style.cssText = `
+      position:absolute;
+      border-radius:50%;
+      background:rgba(255,171,25,.22);
+      width:${size}px;height:${size}px;
+      left:${e.clientX - rect.left - size/2}px;
+      top:${e.clientY - rect.top - size/2}px;
+      pointer-events:none;
+      transform:scale(0);
+      animation:aw-ripple .55s ease-out forwards;
+    `;
+    const prev = btn.style.position;
+    if (!prev || prev === "static") btn.style.position = "relative";
+    btn.style.overflow = "hidden";
+    btn.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 600);
+  });
+
+  // Inject ripple keyframe once
+  if (!document.getElementById("aw-ripple-style")) {
+    const s = document.createElement("style");
+    s.id = "aw-ripple-style";
+    s.textContent = "@keyframes aw-ripple{to{transform:scale(1);opacity:0;}}";
+    document.head.appendChild(s);
+  }
 
   function read(key, fallback) {
     try {
@@ -140,13 +198,33 @@
     return JSON.parse(JSON.stringify(value));
   }
 
-  function toast(message) {
-    toastEl.textContent = message;
-    toastEl.style.display = "block";
+  function toast(message, type) {
+    // Auto-detect type from message
+    const isOk  = !type && (message.includes("✓") || message.includes("saved") || message.includes("export") || message.includes("copied") || message.includes("success"));
+    const isWarn = !type && (message.includes("blocked") || message.includes("first") || message.includes("required") || message.includes("Max"));
+    const resolvedType = type || (isOk ? "ok" : isWarn ? "warn" : "info");
+
+    const icons = { ok: "✓", warn: "⚠", info: "⚔" };
+    const colors = {
+      ok:   "rgba(34,210,139,.15)",
+      warn: "rgba(255,171,25,.15)",
+      info: "rgba(56,213,255,.1)"
+    };
+    const borders = {
+      ok:   "rgba(34,210,139,.4)",
+      warn: "rgba(255,171,25,.4)",
+      info: "rgba(56,213,255,.3)"
+    };
+    toastEl.innerHTML = '<span style="font-size:14px;">' + (icons[resolvedType]||"⚔") + '</span> ' + message;
+    toastEl.style.cssText = `
+      display:block;
+      background:${colors[resolvedType]};
+      border:1px solid ${borders[resolvedType]};
+      backdrop-filter:blur(12px);
+      animation:aw-toast-in .3s cubic-bezier(.34,1.56,.64,1) both;
+    `;
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => {
-      toastEl.style.display = "none";
-    }, 2200);
+    toast.timer = setTimeout(() => { toastEl.style.display = "none"; }, 2400);
   }
 
   function buildDefaultTeams() {
@@ -409,11 +487,17 @@
   function bindSharedEvents() {
     const themeButton = document.getElementById("theme-btn");
     const copyButton = document.getElementById("copy-btn");
+    const logoutButton = document.getElementById("logout-btn");
     if (themeButton) {
       themeButton.addEventListener("click", toggleTheme);
     }
     if (copyButton) {
       copyButton.addEventListener("click", copyLink);
+    }
+    if (logoutButton) {
+      logoutButton.addEventListener("click", () => {
+        if (window.confirm("Logout from Analyst Warrior?")) logout();
+      });
     }
     window.addEventListener("beforeunload", () => {
       if (page === "match") {
@@ -474,13 +558,22 @@
 
   function renderTopbar() {
     const activeMap = getMapById(state.mapId);
-    const matchActions = '<button class="top-btn primary" id="theme-btn" type="button">THEME</button><button class="top-btn" id="edit-maps-btn" type="button">&#9881; EDIT MAPS</button><button class="top-btn" id="png-btn" type="button">PNG</button><button class="top-btn" id="copy-btn" type="button">&#128203; COPY</button><button class="top-btn warn" id="clear-btn" type="button">&#128465; CLEAR MAP</button>';
-    const dataActions = '<button class="top-btn primary" id="theme-btn" type="button">THEME</button><button class="top-btn" id="copy-btn" type="button">&#128203; COPY</button><a class="top-btn solid" href="index.html">MAP STUDIO</a>';
+    const userLabel = isLoggedIn() ? getAuthUser() : 'GUEST';
+    const userBadge = '<span class="user-badge" title="Logged in as ' + esc(userLabel) + '">&#128100; ' + esc(userLabel) + '</span>';
+    const logoutBtn = '<button class="top-btn warn" id="logout-btn" type="button">&#128682; LOGOUT</button>';
+    const loginBtn = '<a class="top-btn primary" href="login.html">&#128275; LOGIN</a>';
+    const authCtrl = isLoggedIn() ? (userBadge + logoutBtn) : loginBtn;
+
+    const matchActions = '<button class="top-btn primary" id="theme-btn" type="button">THEME</button><button class="top-btn" id="edit-maps-btn" type="button">&#9881; EDIT MAPS</button><button class="top-btn" id="png-btn" type="button">PNG</button><button class="top-btn" id="copy-btn" type="button">&#128203; COPY</button><button class="top-btn warn" id="clear-btn" type="button">&#128465; CLEAR MAP</button>' + authCtrl;
+    const dataActions = '<button class="top-btn primary" id="theme-btn" type="button">THEME</button><button class="top-btn" id="copy-btn" type="button">&#128203; COPY</button><a class="top-btn solid" href="index.html">MAP STUDIO</a>' + authCtrl;
     const matchNote = '<a class="page-note" href="maps.html">&#128506; ACTIVE MAP <span id="topbar-active-map">' + esc(activeMap ? activeMap.name : "Select") + '</span></a>';
     const pageNote = page === "maps"
       ? '<div class="page-note">&#128506; ALL MAPS <span>All battlegrounds live here now</span></div>'
       : '<div class="page-note">&#128274; LOCAL ONLY <span>Only this page data is visible here</span></div>';
-    const nav = NAV_ITEMS.map((item) => '<a class="page-link' + (page === item.key ? ' active' : '') + '" href="' + item.href + '">' + item.label + '</a>').join('');
+    const nav = NAV_ITEMS.map((item) => {
+      const isActive = page === item.key || (item.key === "teams" && (page === "performance" || page === "teamstats"));
+      return '<a class="page-link' + (isActive ? ' active' : '') + '" href="' + item.href + '">' + item.label + '</a>';
+    }).join('');
     return '<header class="topbar"><div class="brand"><img class="brand-logo" id="brand-logo" alt="Analyst Warrior logo"><div class="brand-copy"><div class="brand-title">ANALYST WARRIOR</div><div class="brand-subtitle">Private Tactical Workspace</div></div></div><nav class="nav-links">' + nav + '</nav>' + (page === "match" ? matchNote : pageNote) + '<div class="topbar-actions">' + (page === "match" ? matchActions : dataActions) + '</div></header>';
   }
 
@@ -489,22 +582,22 @@
   }
 
   function getPageLabel(key) {
-    const found = NAV_ITEMS.find((item) => item.key === key);
-    return found ? found.label : 'PAGE';
+    if (key === 'maps') return 'MAPS';
+    if (key === 'teams') return 'TEAMS & STATS';
+    if (key === 'export') return 'EXPORT';
+    return 'MATCH';
   }
 
   function getHeroTitle(key) {
     if (key === 'maps') return 'All maps are now inside one dedicated tab';
-    if (key === 'teams') return 'Team roster page with only team data';
-    if (key === 'performance' || key === 'teamstats') return 'Team Stats — track performance across all maps';
-    return 'Export page for CSV and PDF style reports';
+    if (key === 'teams') return 'Teams & Performance — Roster + Tournament Tracker';
+    return 'Export your match data as CSV or branded PDF Report';
   }
 
   function getHeroCopy(key) {
-    if (key === 'maps') return 'Choose any battleground from here instead of top separate tabs. Set one active and jump straight into the studio.';
-    if (key === 'teams') return 'Only team roster data is shown here. Canvas drawings and other controls stay out of this page.';
-    if (key === 'performance' || key === 'teamstats') return 'Add up to 12 teams. For each team, select a map, enter kills, damage, position and per-player stats. Export generates avg DMG and avg Kills in the PDF.';
-    return 'Use this page to export CSV and open a branded report page that you can save as PDF from the browser print dialog.';
+    if (key === 'maps') return 'Choose any battleground from here. Set one active and jump straight into the studio.';
+    if (key === 'teams') return 'Manage your team roster AND track tournament performance across all maps — all in one place. Export to PDF any time.';
+    return 'Export match stats as CSV, or generate a branded PDF report for any saved match. Use browser Print → Save as PDF.';
   }
 
   function initMatchPage() {
@@ -906,7 +999,7 @@
 
     async function loadMap(id) {
       if (!getMapById(id)) {
-        toast("This map does not exist anymore");
+        toast("This map does not exist anymore", "warn");
         return;
       }
       persistCurrentLayer();
@@ -917,24 +1010,52 @@
       renderMatches();
       activeLoadToken += 1;
       const token = activeLoadToken;
+
+      // Show shimmer loading state on canvas
+      const stage = canvas.parentElement;
+      if (stage) {
+        stage.classList.add("map-loading");
+        if (!document.getElementById("aw-shimmer-style")) {
+          const ss = document.createElement("style");
+          ss.id = "aw-shimmer-style";
+          ss.textContent = `
+            .map-loading canvas { opacity:.4; transition:opacity .3s; }
+            .map-loading::after {
+              content:'';
+              position:absolute;inset:0;
+              background:linear-gradient(90deg,transparent 0%,rgba(255,171,25,.08) 50%,transparent 100%);
+              background-size:400px 100%;
+              animation:aw-shimmer .9s linear infinite;
+              pointer-events:none;
+              border-radius:inherit;
+            }
+            canvas { transition:opacity .4s ease; }
+          `;
+          document.head.appendChild(ss);
+        }
+      }
+
       mapImage = new Image();
       try {
         const src = await resolveMapSource(getMapById(id));
         mapImage.onload = () => {
           if (token !== activeLoadToken) return;
+          if (stage) stage.classList.remove("map-loading");
           fitMap();
           draw();
-          toast(getMapById(id).name + " ready");
+          toast("⚔ " + getMapById(id).name + " loaded", "ok");
         };
         mapImage.onerror = () => {
           if (token !== activeLoadToken) return;
+          if (stage) stage.classList.remove("map-loading");
           draw();
-          toast("Map image failed to load");
+          toast("Map image failed to load", "warn");
         };
         mapImage.src = src;
       } catch (_error) {
+        if (stage) stage.classList.remove("map-loading");
         draw();
-        toast("Map asset missing");
+        toast("Map asset missing", "warn");
       }
     }
 
@@ -1618,11 +1739,43 @@
     });
   }
 
-  function renderTeamsPage() {
+  function renderTeamsAndStatsPage() {
     const stats = getStoreStats();
     const hero = document.getElementById("hero-chips");
     const content = document.getElementById("page-content");
-    hero.innerHTML = '<div class="hero-chip">' + stats.teamCount + ' TEAMS</div><div class="hero-chip">' + stats.playerCount + ' PLAYERS</div><div class="hero-chip">&#128274; LOCAL ONLY</div>';
+    hero.innerHTML =
+      '<div class="hero-chip">' + stats.teamCount + ' TEAMS</div>' +
+      '<div class="hero-chip">' + stats.playerCount + ' PLAYERS</div>' +
+      '<div class="hero-chip">' + store.teamStats.length + ' STAT TEAMS</div>' +
+      '<div class="hero-chip">&#128220; EXPORT READY</div>';
+
+    // ── Sub-tab switcher ─────────────────────
+    const subTabs = '<div class="sub-tabs" id="sub-tabs">' +
+      '<button class="sub-tab active" data-sub="roster" type="button">&#128101; TEAM ROSTER</button>' +
+      '<button class="sub-tab" data-sub="stats" type="button">&#128200; TOURNAMENT STATS</button>' +
+      '</div>';
+
+    content.innerHTML = subTabs +
+      '<div id="sub-panel-roster"></div>' +
+      '<div id="sub-panel-stats" style="display:none;"></div>';
+
+    renderRosterPanel();
+    renderStatsPanel();
+
+    content.querySelectorAll('[data-sub]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        content.querySelectorAll('[data-sub]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const which = btn.getAttribute('data-sub');
+        document.getElementById('sub-panel-roster').style.display = which === 'roster' ? '' : 'none';
+        document.getElementById('sub-panel-stats').style.display = which === 'stats' ? '' : 'none';
+      });
+    });
+  }
+
+  function renderRosterPanel() {
+    const panel = document.getElementById("sub-panel-roster");
+    if (!panel) return;
 
     const teamCountButtons = [2, 3, 4].map((n) =>
       '<button class="mini-btn" data-team-count="' + n + '" type="button">' + n + ' TEAMS</button>'
@@ -1657,11 +1810,11 @@
         '</section>';
     }).join('');
 
-    content.innerHTML =
+    panel.innerHTML =
       '<section class="secondary-card"><p class="eyebrow">TEAM CONTROLS</p><div class="team-count-row">' + teamCountButtons + '</div></section>' +
       teamsHTML;
 
-    content.querySelectorAll("[data-team-count]").forEach((button) => {
+    panel.querySelectorAll("[data-team-count]").forEach((button) => {
       button.addEventListener("click", () => {
         const count = Number(button.getAttribute("data-team-count"));
         while (store.teams.length > count) store.teams.pop();
@@ -1669,28 +1822,171 @@
         saveTeams();
       });
     });
-    content.querySelectorAll("[data-team-name]").forEach((input) => {
+    panel.querySelectorAll("[data-team-name]").forEach((input) => {
       input.addEventListener("change", () => {
         const index = Number(input.getAttribute("data-team-name"));
         store.teams[index].name = input.value.trim() || ("Team " + String.fromCharCode(65 + index));
         saveTeams();
       });
     });
-    content.querySelectorAll("[data-team-color]").forEach((input) => {
+    panel.querySelectorAll("[data-team-color]").forEach((input) => {
       input.addEventListener("change", () => {
         const index = Number(input.getAttribute("data-team-color"));
         store.teams[index].color = input.value;
         saveTeams();
       });
     });
-    content.querySelectorAll("[data-add-player]").forEach((button) => {
+    panel.querySelectorAll("[data-add-player]").forEach((button) => {
       button.addEventListener("click", () => openAddPlayerModal(Number(button.getAttribute("data-add-player"))));
     });
-    content.querySelectorAll("[data-remove-player]").forEach((button) => {
+    panel.querySelectorAll("[data-remove-player]").forEach((button) => {
       button.addEventListener("click", () => {
         const parts = button.getAttribute("data-remove-player").split(":");
         store.teams[Number(parts[0])].players.splice(Number(parts[1]), 1);
         saveTeams();
+      });
+    });
+  }
+
+  function renderStatsPanel() {
+    const panel = document.getElementById("sub-panel-stats");
+    if (!panel) return;
+    const MAX_TEAMS = 12;
+    const teamCount = store.teamStats.length;
+
+    const mapOptions = maps.map((m) => '<option value="' + esc(m.id) + '">' + esc(m.name) + '</option>').join('');
+
+    const addBtn = teamCount < MAX_TEAMS
+      ? '<button class="action-btn primary" id="ts-add-team" type="button">+ ADD TEAM</button>'
+      : '<span class="muted-line">Max 12 teams reached</span>';
+
+    const teamsHTML = store.teamStats.map((team, ti) => {
+      const mapCounts = {};
+      team.entries.forEach((e) => { mapCounts[e.mapId] = (mapCounts[e.mapId] || 0) + 1; });
+
+      const entriesHTML = team.entries.length ? team.entries.map((entry, ei) => {
+        const mapObj = maps.find((m) => m.id === entry.mapId);
+        const mapName = mapObj ? mapObj.name : entry.mapId;
+        const dupCount = mapCounts[entry.mapId] || 1;
+        const dupLabel = dupCount > 1 ? ' <span class="map-dup-badge">x' + dupCount + '</span>' : '';
+        const playersHTML = (entry.players || []).map((p, pi) =>
+          '<tr class="player-stat-row">' +
+          '<td style="padding-left:20px;color:var(--muted)">' + esc(p.name) + '</td>' +
+          '<td>' + esc(p.role || '-') + '</td>' +
+          '<td>' + (p.kills || 0) + '</td>' +
+          '<td>' + (p.damage || 0) + '</td>' +
+          '<td>' + (p.assists || 0) + '</td>' +
+          '<td>' + (p.deaths || 0) + '</td>' +
+          '<td><button class="tiny-btn" data-del-player="' + ti + ':' + ei + ':' + pi + '" type="button">×</button></td>' +
+          '</tr>'
+        ).join('');
+        return '<tr class="entry-row">' +
+          '<td><strong>' + esc(mapName) + dupLabel + '</strong></td>' +
+          '<td>' + (entry.kills || 0) + '</td>' +
+          '<td>' + (entry.damage || 0) + '</td>' +
+          '<td>#' + (entry.position || '-') + '</td>' +
+          '<td><button class="tiny-btn" data-del-entry="' + ti + ':' + ei + '" type="button">DEL</button></td>' +
+          '</tr>' +
+          (entry.players && entry.players.length ? '<tr><td colspan="5"><table style="width:100%;margin:0;border:none;"><thead><tr><th style="padding-left:20px;">PLAYER</th><th>ROLE</th><th>K</th><th>DMG</th><th>A</th><th>D</th><th></th></tr></thead><tbody>' + playersHTML + '</tbody></table></td></tr>' : '');
+      }).join('') : '<tr><td colspan="5" class="muted-line">No entries yet</td></tr>';
+
+      return '<section class="secondary-card">' +
+        '<div class="card-top">' +
+          '<div><strong style="font-family:var(--hud);font-size:15px;">' + esc(team.name) + '</strong>' +
+          '<span class="muted-line" style="margin-left:10px;font-size:12px;">' + team.entries.length + ' match entries</span></div>' +
+          '<button class="tiny-btn" data-del-team="' + ti + '" type="button">DELETE TEAM</button>' +
+        '</div>' +
+        '<div class="ts-add-entry" style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center;">' +
+          '<select class="select" id="ts-map-' + ti + '" style="min-width:140px;">' + mapOptions + '</select>' +
+          '<input class="input" type="number" id="ts-kills-' + ti + '" placeholder="Kills" style="width:80px;" min="0" value="0">' +
+          '<input class="input" type="number" id="ts-dmg-' + ti + '" placeholder="Damage" style="width:90px;" min="0" value="0">' +
+          '<input class="input" type="number" id="ts-pos-' + ti + '" placeholder="Position" style="width:80px;" min="1" value="1">' +
+          '<button class="action-btn" data-add-entry="' + ti + '" type="button">+ ADD ENTRY</button>' +
+        '</div>' +
+        '<div class="ts-add-player" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;align-items:center;border-top:1px solid var(--line);padding-top:8px;">' +
+          '<span class="muted-line" style="font-size:11px;">ADD PLAYER TO LAST ENTRY:</span>' +
+          '<input class="input" id="ts-pname-' + ti + '" placeholder="Player name" style="width:120px;">' +
+          '<input class="input" id="ts-prole-' + ti + '" placeholder="Role" style="width:90px;">' +
+          '<input class="input" type="number" id="ts-pk-' + ti + '" placeholder="K" style="width:60px;" value="0">' +
+          '<input class="input" type="number" id="ts-pd-' + ti + '" placeholder="DMG" style="width:70px;" value="0">' +
+          '<input class="input" type="number" id="ts-pa-' + ti + '" placeholder="A" style="width:60px;" value="0">' +
+          '<input class="input" type="number" id="ts-pde-' + ti + '" placeholder="D" style="width:60px;" value="0">' +
+          '<button class="action-btn" data-add-player-entry="' + ti + '" type="button">+ PLAYER</button>' +
+        '</div>' +
+        '<table><thead><tr><th>MAP</th><th>KILLS</th><th>DMG</th><th>POS</th><th></th></tr></thead>' +
+        '<tbody>' + entriesHTML + '</tbody></table>' +
+        '</section>';
+    }).join('');
+
+    panel.innerHTML =
+      '<section class="secondary-card">' +
+        '<div class="card-top"><div><p class="eyebrow">TOURNAMENT STATS</p><div class="section-title">Performance Tracker</div></div>' +
+        '<div class="button-row">' + addBtn + '<button class="action-btn primary" id="ts-pdf-btn" type="button">&#128220; EXPORT PDF</button></div>' +
+        '</div>' +
+      '</section>' +
+      teamsHTML;
+
+    const addTeamBtn = document.getElementById("ts-add-team");
+    if (addTeamBtn) addTeamBtn.addEventListener("click", () => openAddTeamStatsModal());
+
+    const pdfBtn = document.getElementById("ts-pdf-btn");
+    if (pdfBtn) pdfBtn.addEventListener("click", exportTeamStatsPDF);
+
+    panel.querySelectorAll("[data-add-entry]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const ti = Number(btn.getAttribute("data-add-entry"));
+        const mapId = document.getElementById("ts-map-" + ti).value;
+        const kills = Number(document.getElementById("ts-kills-" + ti).value) || 0;
+        const damage = Number(document.getElementById("ts-dmg-" + ti).value) || 0;
+        const position = Number(document.getElementById("ts-pos-" + ti).value) || 1;
+        store.teamStats[ti].entries.push({ mapId, kills, damage, position, players: [] });
+        saveTeamStats();
+      });
+    });
+
+    panel.querySelectorAll("[data-add-player-entry]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const ti = Number(btn.getAttribute("data-add-player-entry"));
+        const team = store.teamStats[ti];
+        if (!team || !team.entries.length) { toast("Add a map entry first"); return; }
+        const name = document.getElementById("ts-pname-" + ti).value.trim();
+        if (!name) { toast("Player name required"); return; }
+        const lastEntry = team.entries[team.entries.length - 1];
+        if (!lastEntry.players) lastEntry.players = [];
+        lastEntry.players.push({
+          name,
+          role: document.getElementById("ts-prole-" + ti).value.trim() || "-",
+          kills: Number(document.getElementById("ts-pk-" + ti).value) || 0,
+          damage: Number(document.getElementById("ts-pd-" + ti).value) || 0,
+          assists: Number(document.getElementById("ts-pa-" + ti).value) || 0,
+          deaths: Number(document.getElementById("ts-pde-" + ti).value) || 0
+        });
+        saveTeamStats();
+      });
+    });
+
+    panel.querySelectorAll("[data-del-entry]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [ti, ei] = btn.getAttribute("data-del-entry").split(":").map(Number);
+        store.teamStats[ti].entries.splice(ei, 1);
+        saveTeamStats();
+      });
+    });
+
+    panel.querySelectorAll("[data-del-player]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [ti, ei, pi] = btn.getAttribute("data-del-player").split(":").map(Number);
+        store.teamStats[ti].entries[ei].players.splice(pi, 1);
+        saveTeamStats();
+      });
+    });
+
+    panel.querySelectorAll("[data-del-team]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const ti = Number(btn.getAttribute("data-del-team"));
+        if (!window.confirm("Delete team " + store.teamStats[ti].name + "?")) return;
+        store.teamStats.splice(ti, 1);
+        saveTeamStats();
       });
     });
   }
@@ -1791,165 +2087,6 @@
   function saveTeamStats() {
     write(KEYS.teamStats, store.teamStats);
     refreshPage();
-  }
-
-  function renderTeamStatsPage() {
-    const hero = document.getElementById("hero-chips");
-    const content = document.getElementById("page-content");
-    const MAX_TEAMS = 12;
-    const teamCount = store.teamStats.length;
-
-    hero.innerHTML = '<div class="hero-chip">' + teamCount + ' / ' + MAX_TEAMS + ' TEAMS</div>' +
-      '<div class="hero-chip">' + maps.length + ' MAPS</div>' +
-      '<div class="hero-chip">&#128220; EXPORT READY</div>';
-
-    const mapOptions = maps.map((m) => '<option value="' + esc(m.id) + '">' + esc(m.name) + '</option>').join('');
-
-    const addBtn = teamCount < MAX_TEAMS
-      ? '<button class="action-btn primary" id="ts-add-team" type="button">+ ADD TEAM</button>'
-      : '<span class="muted-line">Max 12 teams reached</span>';
-
-    const teamsHTML = store.teamStats.map((team, ti) => {
-      // Count map occurrences
-      const mapCounts = {};
-      team.entries.forEach((e) => { mapCounts[e.mapId] = (mapCounts[e.mapId] || 0) + 1; });
-
-      const entriesHTML = team.entries.length ? team.entries.map((entry, ei) => {
-        const mapObj = maps.find((m) => m.id === entry.mapId);
-        const mapName = mapObj ? mapObj.name : entry.mapId;
-        const dupCount = mapCounts[entry.mapId] || 1;
-        const dupLabel = dupCount > 1 ? ' <span class="map-dup-badge">x' + dupCount + '</span>' : '';
-        const playersHTML = (entry.players || []).map((p, pi) =>
-          '<tr class="player-stat-row">' +
-          '<td style="padding-left:20px;color:var(--muted)">' + esc(p.name) + '</td>' +
-          '<td>' + esc(p.role || '-') + '</td>' +
-          '<td>' + (p.kills || 0) + '</td>' +
-          '<td>' + (p.damage || 0) + '</td>' +
-          '<td>' + (p.assists || 0) + '</td>' +
-          '<td>' + (p.deaths || 0) + '</td>' +
-          '<td><button class="tiny-btn" data-del-player="' + ti + ':' + ei + ':' + pi + '" type="button">×</button></td>' +
-          '</tr>'
-        ).join('');
-        return '<tr class="entry-row">' +
-          '<td><strong>' + esc(mapName) + dupLabel + '</strong></td>' +
-          '<td>' + (entry.kills || 0) + '</td>' +
-          '<td>' + (entry.damage || 0) + '</td>' +
-          '<td>#' + (entry.position || '-') + '</td>' +
-          '<td><button class="tiny-btn" data-del-entry="' + ti + ':' + ei + '" type="button">DEL</button></td>' +
-          '</tr>' +
-          (entry.players && entry.players.length ? '<tr><td colspan="5"><table style="width:100%;margin:0;border:none;"><thead><tr><th style="padding-left:20px;">PLAYER</th><th>ROLE</th><th>K</th><th>DMG</th><th>A</th><th>D</th><th></th></tr></thead><tbody>' + playersHTML + '</tbody></table></td></tr>' : '');
-      }).join('') : '<tr><td colspan="5" class="muted-line">No entries yet</td></tr>';
-
-      return '<section class="secondary-card">' +
-        '<div class="card-top">' +
-          '<div><strong style="font-family:var(--hud);font-size:15px;">' + esc(team.name) + '</strong>' +
-          '<span class="muted-line" style="margin-left:10px;font-size:12px;">' + team.entries.length + ' match entries</span></div>' +
-          '<button class="tiny-btn" data-del-team="' + ti + '" type="button">DELETE TEAM</button>' +
-        '</div>' +
-        '<div class="ts-add-entry" style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center;">' +
-          '<select class="select" id="ts-map-' + ti + '" style="min-width:140px;">' + mapOptions + '</select>' +
-          '<input class="input" type="number" id="ts-kills-' + ti + '" placeholder="Kills" style="width:80px;" min="0" value="0">' +
-          '<input class="input" type="number" id="ts-dmg-' + ti + '" placeholder="Damage" style="width:90px;" min="0" value="0">' +
-          '<input class="input" type="number" id="ts-pos-' + ti + '" placeholder="Position" style="width:80px;" min="1" value="1">' +
-          '<button class="action-btn" data-add-entry="' + ti + '" type="button">+ ADD ENTRY</button>' +
-        '</div>' +
-        '<div class="ts-add-player" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;align-items:center;border-top:1px solid var(--line);padding-top:8px;">' +
-          '<span class="muted-line" style="font-size:11px;">ADD PLAYER TO LAST ENTRY:</span>' +
-          '<input class="input" id="ts-pname-' + ti + '" placeholder="Player name" style="width:120px;">' +
-          '<input class="input" id="ts-prole-' + ti + '" placeholder="Role" style="width:90px;">' +
-          '<input class="input" type="number" id="ts-pk-' + ti + '" placeholder="K" style="width:60px;" value="0">' +
-          '<input class="input" type="number" id="ts-pd-' + ti + '" placeholder="DMG" style="width:70px;" value="0">' +
-          '<input class="input" type="number" id="ts-pa-' + ti + '" placeholder="A" style="width:60px;" value="0">' +
-          '<input class="input" type="number" id="ts-pde-' + ti + '" placeholder="D" style="width:60px;" value="0">' +
-          '<button class="action-btn" data-add-player-entry="' + ti + '" type="button">+ PLAYER</button>' +
-        '</div>' +
-        '<table><thead><tr><th>MAP</th><th>KILLS</th><th>DMG</th><th>POS</th><th></th></tr></thead>' +
-        '<tbody>' + entriesHTML + '</tbody></table>' +
-        '</section>';
-    }).join('');
-
-    content.innerHTML =
-      '<section class="secondary-card">' +
-        '<div class="card-top"><div><p class="eyebrow">TEAM STATS</p><div class="section-title">Tournament Performance Tracker</div></div>' +
-        '<div class="button-row">' + addBtn + '<button class="action-btn primary" id="ts-pdf-btn" type="button">&#128220; EXPORT PDF</button></div>' +
-        '</div>' +
-      '</section>' +
-      teamsHTML;
-
-    // Add team
-    const addTeamBtn = document.getElementById("ts-add-team");
-    if (addTeamBtn) {
-      addTeamBtn.addEventListener("click", () => {
-        openAddTeamStatsModal();
-      });
-    }
-
-    // PDF export
-    const pdfBtn = document.getElementById("ts-pdf-btn");
-    if (pdfBtn) pdfBtn.addEventListener("click", exportTeamStatsPDF);
-
-    // Add entry
-    content.querySelectorAll("[data-add-entry]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const ti = Number(btn.getAttribute("data-add-entry"));
-        const mapId = document.getElementById("ts-map-" + ti).value;
-        const kills = Number(document.getElementById("ts-kills-" + ti).value) || 0;
-        const damage = Number(document.getElementById("ts-dmg-" + ti).value) || 0;
-        const position = Number(document.getElementById("ts-pos-" + ti).value) || 1;
-        store.teamStats[ti].entries.push({ mapId, kills, damage, position, players: [] });
-        saveTeamStats();
-      });
-    });
-
-    // Add player to last entry
-    content.querySelectorAll("[data-add-player-entry]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const ti = Number(btn.getAttribute("data-add-player-entry"));
-        const team = store.teamStats[ti];
-        if (!team || !team.entries.length) { toast("Add a map entry first"); return; }
-        const name = document.getElementById("ts-pname-" + ti).value.trim();
-        if (!name) { toast("Player name required"); return; }
-        const lastEntry = team.entries[team.entries.length - 1];
-        if (!lastEntry.players) lastEntry.players = [];
-        lastEntry.players.push({
-          name,
-          role: document.getElementById("ts-prole-" + ti).value.trim() || "-",
-          kills: Number(document.getElementById("ts-pk-" + ti).value) || 0,
-          damage: Number(document.getElementById("ts-pd-" + ti).value) || 0,
-          assists: Number(document.getElementById("ts-pa-" + ti).value) || 0,
-          deaths: Number(document.getElementById("ts-pde-" + ti).value) || 0
-        });
-        saveTeamStats();
-      });
-    });
-
-    // Delete entry
-    content.querySelectorAll("[data-del-entry]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const [ti, ei] = btn.getAttribute("data-del-entry").split(":").map(Number);
-        store.teamStats[ti].entries.splice(ei, 1);
-        saveTeamStats();
-      });
-    });
-
-    // Delete player
-    content.querySelectorAll("[data-del-player]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const [ti, ei, pi] = btn.getAttribute("data-del-player").split(":").map(Number);
-        store.teamStats[ti].entries[ei].players.splice(pi, 1);
-        saveTeamStats();
-      });
-    });
-
-    // Delete team
-    content.querySelectorAll("[data-del-team]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const ti = Number(btn.getAttribute("data-del-team"));
-        if (!window.confirm("Delete team " + store.teamStats[ti].name + "?")) return;
-        store.teamStats.splice(ti, 1);
-        saveTeamStats();
-      });
-    });
   }
 
   function openAddTeamStatsModal() {
@@ -2083,67 +2220,264 @@
   function renderExportPage() {
     const hero = document.getElementById("hero-chips");
     const content = document.getElementById("page-content");
-    const latest = store.matches[0];
-    hero.innerHTML = '<div class="hero-chip">' + store.matches.length + ' MATCHES READY</div><div class="hero-chip">' + store.teams.length + ' TEAMS READY</div><div class="hero-chip">&#128220; PDF PRINT VIEW</div>';
-    content.innerHTML = '<section class="secondary-card"><p class="eyebrow">EXPORT OPTIONS</p><div class="check-grid"><label><input type="checkbox" id="exp-matches" checked> Match stats</label><label><input type="checkbox" id="exp-teams" checked> Team data</label><label><input type="checkbox" id="exp-players" checked> Player data</label></div><div class="form-grid" style="margin-top:14px;">' + (store.matches.length ? '<select class="select" id="report-match">' + store.matches.map((match) => '<option value="' + esc(String(match.id)) + '">' + esc(match.team + ' | ' + match.map + ' | ' + match.date) + '</option>').join('') + '</select>' : '<div class="empty-state">No matches yet.</div>') + '</div><div class="button-row" style="margin-top:14px;"><button class="action-btn" id="csv-btn" type="button">EXPORT CSV</button><button class="action-btn primary" id="print-btn" type="button">PDF REPORT</button></div></section><section class="secondary-card"><p class="eyebrow">REPORT PREVIEW</p>' + renderReportPreview(latest) + '</section>';
+    hero.innerHTML =
+      '<div class="hero-chip">' + store.matches.length + ' MATCHES</div>' +
+      '<div class="hero-chip">' + store.teams.length + ' TEAMS</div>' +
+      '<div class="hero-chip">' + store.teamStats.length + ' STAT TEAMS</div>' +
+      '<div class="hero-chip">&#128220; EXPORT READY</div>';
+
+    const matchOptions = store.matches.length
+      ? '<select class="select" id="report-match">' +
+          store.matches.map((m) =>
+            '<option value="' + esc(String(m.id)) + '">' +
+            esc(m.team + ' | ' + m.map + ' | ' + m.date) + '</option>'
+          ).join('') +
+        '</select>'
+      : '';
+
+    content.innerHTML =
+      '<section class="secondary-card">' +
+        '<p class="eyebrow">EXPORT OPTIONS</p>' +
+        '<div class="check-grid">' +
+          '<label><input type="checkbox" id="exp-matches" checked> Match stats</label>' +
+          '<label><input type="checkbox" id="exp-teams" checked> Team roster</label>' +
+          '<label><input type="checkbox" id="exp-players" checked> Player performance</label>' +
+          '<label><input type="checkbox" id="exp-teamstats" checked> Tournament stats</label>' +
+        '</div>' +
+        (matchOptions ? '<div class="form-grid" style="margin-top:14px;">' + matchOptions + '</div>' : '') +
+        '<div class="button-row" style="margin-top:18px;">' +
+          '<button class="action-btn" id="csv-btn" type="button">&#128190; EXPORT CSV</button>' +
+          '<button class="action-btn primary" id="print-btn" type="button" ' + (!store.matches.length ? 'disabled title="Save at least one match first"' : '') + '>&#128444; MATCH PDF REPORT</button>' +
+          '<button class="action-btn primary" id="teamstats-pdf-btn" type="button" ' + (!store.teamStats.length ? 'disabled title="Add tournament teams first"' : '') + '>&#128220; TOURNAMENT PDF</button>' +
+        '</div>' +
+        (store.matches.length === 0 && store.teamStats.length === 0
+          ? '<div class="empty-state" style="margin-top:14px;">&#128712; Save at least one match or add tournament teams to enable PDF export.</div>'
+          : '') +
+      '</section>' +
+      '<section class="secondary-card">' +
+        '<p class="eyebrow">REPORT PREVIEW</p>' +
+        renderReportPreview(store.matches[0]) +
+      '</section>';
+
     const csvButton = document.getElementById("csv-btn");
     const printButton = document.getElementById("print-btn");
+    const teamstatsPdfBtn = document.getElementById("teamstats-pdf-btn");
+
     if (csvButton) csvButton.addEventListener("click", exportCSV);
-    if (printButton) printButton.addEventListener("click", printReport);
+    if (printButton && store.matches.length) printButton.addEventListener("click", printReport);
+    if (teamstatsPdfBtn && store.teamStats.length) teamstatsPdfBtn.addEventListener("click", exportTeamStatsPDF);
   }
 
   function exportCSV() {
     const includeMatches = document.getElementById("exp-matches") && document.getElementById("exp-matches").checked;
     const includeTeams = document.getElementById("exp-teams") && document.getElementById("exp-teams").checked;
     const includePlayers = document.getElementById("exp-players") && document.getElementById("exp-players").checked;
+    const includeTeamStats = document.getElementById("exp-teamstats") && document.getElementById("exp-teamstats").checked;
     let csv = "";
-    if (includeMatches) {
+
+    if (includeMatches && store.matches.length) {
+      csv += "=== MATCH STATS ===\n";
       csv += "Team,Map,Position,Date,Player,Character,Kills,Deaths,Assists,Damage,Role\n";
       store.matches.forEach((match) => {
-        match.players.forEach((player) => {
-          csv += [match.team, match.map, match.position, match.date, player.name, player.character || "-", player.kills, player.deaths, player.assists, player.damage, player.role || "-"].join(",") + "\n";
-        });
+        if (!match.players || !match.players.length) {
+          csv += [match.team, match.map, match.position, match.date, "-", "-", match.total_kills, match.total_deaths, match.total_assists, match.total_damage, "-"].join(",") + "\n";
+        } else {
+          match.players.forEach((player) => {
+            csv += [
+              '"' + (match.team || "").replace(/"/g, '""') + '"',
+              '"' + (match.map || "").replace(/"/g, '""') + '"',
+              match.position,
+              match.date,
+              '"' + (player.name || "").replace(/"/g, '""') + '"',
+              '"' + (player.character || "-").replace(/"/g, '""') + '"',
+              player.kills, player.deaths, player.assists, player.damage,
+              '"' + (player.role || "-").replace(/"/g, '""') + '"'
+            ].join(",") + "\n";
+          });
+        }
       });
       csv += "\n";
     }
-    if (includeTeams) {
-      csv += "Team,Player,Kills,Deaths,Assists,Damage\n";
+
+    if (includeTeams && store.teams.length) {
+      csv += "=== TEAM ROSTER ===\n";
+      csv += "Team,Player,Role,Kills,Deaths,Assists,Damage\n";
       store.teams.forEach((team) => {
-        team.players.forEach((player) => {
-          csv += [team.name, player.name, player.kills, player.deaths, player.assists, player.damage].join(",") + "\n";
-        });
+        if (!team.players.length) {
+          csv += ['"' + (team.name || "").replace(/"/g, '""') + '"', "-", "-", 0, 0, 0, 0].join(",") + "\n";
+        } else {
+          team.players.forEach((player) => {
+            csv += [
+              '"' + (team.name || "").replace(/"/g, '""') + '"',
+              '"' + (player.name || "").replace(/"/g, '""') + '"',
+              '"' + (player.role || "-").replace(/"/g, '""') + '"',
+              player.kills, player.deaths, player.assists, player.damage
+            ].join(",") + "\n";
+          });
+        }
       });
       csv += "\n";
     }
+
     if (includePlayers) {
       const playerStats = computePerformanceData().playerStats;
-      csv += "Player,Kills,Deaths,Assists,Damage,KD\n";
-      Object.keys(playerStats).forEach((name) => {
-        const stats = playerStats[name];
-        csv += [name, stats.kills, stats.deaths, stats.assists, stats.damage, (stats.kills / (stats.deaths || 1)).toFixed(2)].join(",") + "\n";
+      const keys = Object.keys(playerStats);
+      if (keys.length) {
+        csv += "=== PLAYER PERFORMANCE ===\n";
+        csv += "Player,Kills,Deaths,Assists,Damage,KD Ratio\n";
+        keys.forEach((name) => {
+          const s = playerStats[name];
+          csv += [
+            '"' + name.replace(/"/g, '""') + '"',
+            s.kills, s.deaths, s.assists, s.damage,
+            (s.kills / (s.deaths || 1)).toFixed(2)
+          ].join(",") + "\n";
+        });
+        csv += "\n";
+      }
+    }
+
+    if (includeTeamStats && store.teamStats.length) {
+      csv += "=== TOURNAMENT STATS ===\n";
+      csv += "Team,Map,Kills,Damage,Position,Players\n";
+      store.teamStats.forEach((team) => {
+        team.entries.forEach((entry) => {
+          const mapObj = maps.find((m) => m.id === entry.mapId);
+          const mapName = mapObj ? mapObj.name : entry.mapId;
+          csv += [
+            '"' + (team.name || "").replace(/"/g, '""') + '"',
+            '"' + mapName.replace(/"/g, '""') + '"',
+            entry.kills || 0, entry.damage || 0,
+            "#" + (entry.position || "-"),
+            (entry.players || []).map(p => p.name).join("; ")
+          ].join(",") + "\n";
+        });
       });
     }
-    const blob = new Blob([csv], { type: "text/csv" });
+
+    if (!csv.trim()) {
+      toast("Nothing to export — add some data first!");
+      return;
+    }
+
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "analyst_export.csv";
+    link.download = "analyst_warrior_export_" + new Date().toISOString().slice(0,10) + ".csv";
     link.click();
-    toast("CSV exported");
+    URL.revokeObjectURL(link.href);
+    toast("✓ CSV exported successfully!");
   }
 
   function printReport() {
     const select = document.getElementById("report-match");
-    const matchId = select ? Number(select.value) : 0;
-    const match = store.matches.find((item) => Number(item.id) === matchId) || store.matches[0];
-    if (!match) return toast("Save a match first");
-    const reportWindow = window.open("", "_blank");
-    if (!reportWindow) return toast("Popup blocked");
-    const rows = match.players.map((player, index) => '<tr><td>' + (index + 1) + '</td><td>' + esc(player.name) + '</td><td>' + esc(player.character || '-') + '</td><td>' + player.kills + '</td><td>' + player.assists + '</td><td>' + player.damage + '</td><td>' + esc(player.role || '-') + '</td></tr>').join('');
-    const html = ['<html><head><title>Analyst Warrior Report</title><style>', 'body{margin:0;font-family:Segoe UI,Tahoma,sans-serif;background:#f5f2ea;color:#111;} .page{padding:30px;} .card{background:#111723;color:#fff;border-radius:24px;padding:26px;} .top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;} .brand{font-size:28px;font-weight:800;letter-spacing:4px;color:#ffab19;} .sub{margin-top:6px;font-size:13px;letter-spacing:2px;color:#9cb0d3;} .map{margin-top:18px;font-size:16px;color:#cfd8ea;} .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0;} .metric{padding:16px;border-radius:18px;background:#1a2232;} .metric b{display:block;font-size:28px;color:#ffab19;} .metric span{display:block;margin-top:8px;font-size:12px;letter-spacing:1px;color:#9cb0d3;} table{width:100%;border-collapse:collapse;background:#fff;color:#111;border-radius:18px;overflow:hidden;margin-top:24px;} th,td{padding:12px 14px;border-bottom:1px solid #e4e8f0;text-align:left;font-size:13px;} th{background:#f4f6fb;font-size:11px;letter-spacing:2px;color:#6b7280;} .footer{margin-top:20px;font-size:12px;color:#7c869d;}', '</style></head><body><div class="page"><div class="card"><div class="top"><div><div class="brand">ANALYST WARRIOR</div><div class="sub">FREE FIRE · MATCH REPORT</div><div class="map">' + esc(match.date) + ' · ' + esc(match.team) + '</div><div class="map">' + esc(match.map) + ' · Position #' + esc(String(match.position)) + '</div></div><div class="sub">PRIVATE LOCAL REPORT</div></div><div class="metrics"><div class="metric"><b>' + match.total_kills + '</b><span>KILLS</span></div><div class="metric"><b>' + match.total_assists + '</b><span>ASSISTS</span></div><div class="metric"><b>' + match.total_damage + '</b><span>DAMAGE</span></div></div><table><thead><tr><th>#</th><th>PLAYER</th><th>CHARACTER</th><th>KILLS</th><th>ASSISTS</th><th>DAMAGE</th><th>ROLE</th></tr></thead><tbody>', rows, '</tbody></table><div class="footer">ANALYST WARRIOR · LOCAL DEVICE STORAGE · Use the browser print dialog and choose Save as PDF.</div></div></div></bo', 'dy></ht', 'ml>'].join('');
+    const matchId = select ? String(select.value) : "";
+    const match = (matchId ? store.matches.find((item) => String(item.id) === matchId) : null) || store.matches[0];
+    if (!match) { toast("Save at least one match first!"); return; }
+
+    const reportWindow = window.open("", "_blank", "width=900,height=700");
+    if (!reportWindow) {
+      toast("Popup blocked! Please allow popups for this site and try again.");
+      return;
+    }
+
+    const rows = (match.players || []).map((player, index) =>
+      '<tr>' +
+      '<td style="text-align:center;font-weight:600;">' + (index + 1) + '</td>' +
+      '<td>' + esc(player.name) + '</td>' +
+      '<td>' + esc(player.character || '-') + '</td>' +
+      '<td style="color:#e65c00;font-weight:700;">' + player.kills + '</td>' +
+      '<td>' + (player.deaths || 0) + '</td>' +
+      '<td>' + player.assists + '</td>' +
+      '<td style="color:#0077b6;font-weight:700;">' + player.damage.toLocaleString() + '</td>' +
+      '<td>' + esc(player.role || '-') + '</td>' +
+      '</tr>'
+    ).join('');
+
+    const kd = match.total_deaths > 0
+      ? (match.total_kills / match.total_deaths).toFixed(2)
+      : match.total_kills.toFixed(2);
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Analyst Warrior — Match Report</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Barlow',sans-serif;background:#0d1117;color:#eef4ff;min-height:100vh;}
+  .page{max-width:860px;margin:0 auto;padding:32px 24px;}
+  .header{background:linear-gradient(135deg,#111723 0%,#1a2232 100%);border-radius:20px;padding:28px 32px;margin-bottom:24px;border:1px solid rgba(255,171,25,.2);}
+  .brand{font-family:'Barlow Condensed',sans-serif;font-size:30px;font-weight:800;letter-spacing:5px;color:#ffab19;}
+  .sub{font-size:12px;letter-spacing:3px;color:#9cb0d3;margin-top:4px;}
+  .match-info{margin-top:16px;display:flex;gap:20px;flex-wrap:wrap;}
+  .info-chip{background:rgba(255,171,25,.1);border:1px solid rgba(255,171,25,.25);border-radius:8px;padding:6px 14px;font-size:13px;color:#ffab19;letter-spacing:1px;}
+  .metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px;}
+  .metric{background:#111723;border:1px solid rgba(255,171,25,.15);border-radius:16px;padding:18px 12px;text-align:center;}
+  .metric .val{font-family:'Barlow Condensed',sans-serif;font-size:32px;font-weight:800;color:#ffab19;}
+  .metric .lbl{font-size:11px;letter-spacing:2px;color:#9cb0d3;margin-top:6px;}
+  .metric.blue .val{color:#38d5ff;}
+  .metric.green .val{color:#22d28b;}
+  .metric.red .val{color:#ff5d67;}
+  table{width:100%;border-collapse:collapse;border-radius:16px;overflow:hidden;}
+  .table-wrap{border-radius:16px;overflow:hidden;border:1px solid rgba(255,171,25,.12);}
+  thead tr{background:#111723;}
+  thead th{padding:12px 16px;text-align:left;font-size:11px;letter-spacing:2px;color:#9cb0d3;font-weight:600;}
+  tbody tr{background:#0d1117;border-bottom:1px solid rgba(255,255,255,.04);}
+  tbody tr:nth-child(even){background:#111723;}
+  tbody tr:hover{background:#1a2232;}
+  tbody td{padding:12px 16px;font-size:13px;color:#eef4ff;}
+  .footer{margin-top:28px;text-align:center;font-size:11px;color:#556080;letter-spacing:1px;}
+  .section-title{font-family:'Barlow Condensed',sans-serif;font-size:14px;letter-spacing:3px;color:#9cb0d3;margin-bottom:12px;}
+  @media print{
+    body{background:#fff;color:#111;}
+    .header{background:#111723!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .metric{background:#111723!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    thead tr{background:#111723!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    tbody tr:nth-child(even){background:#f4f6fb!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="brand">ANALYST WARRIOR</div>
+    <div class="sub">FREE FIRE · MATCH REPORT</div>
+    <div class="match-info">
+      <div class="info-chip">📅 ${esc(match.date)}</div>
+      <div class="info-chip">🛡 ${esc(match.team)}</div>
+      <div class="info-chip">🗺 ${esc(match.map)}</div>
+      <div class="info-chip">🏆 Position #${esc(String(match.position))}</div>
+    </div>
+  </div>
+  <div class="section-title">MATCH SUMMARY</div>
+  <div class="metrics">
+    <div class="metric"><div class="val">${match.total_kills}</div><div class="lbl">KILLS</div></div>
+    <div class="metric red"><div class="val">${match.total_deaths || 0}</div><div class="lbl">DEATHS</div></div>
+    <div class="metric green"><div class="val">${match.total_assists}</div><div class="lbl">ASSISTS</div></div>
+    <div class="metric blue"><div class="val">${match.total_damage.toLocaleString()}</div><div class="lbl">DAMAGE</div></div>
+    <div class="metric"><div class="val">${kd}</div><div class="lbl">K/D RATIO</div></div>
+  </div>
+  <div class="section-title">PLAYER BREAKDOWN</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>PLAYER</th><th>CHARACTER</th>
+          <th>KILLS</th><th>DEATHS</th><th>ASSISTS</th><th>DAMAGE</th><th>ROLE</th>
+        </tr>
+      </thead>
+      <tbody>${rows || '<tr><td colspan="8" style="text-align:center;padding:20px;color:#556080;">No player data</td></tr>'}</tbody>
+    </table>
+  </div>
+  <div class="footer">ANALYST WARRIOR · Generated ${new Date().toLocaleString()} · Use browser Print → Save as PDF</div>
+</div>
+<script>window.onload = function(){ window.print(); }<\/script>
+</body></html>`;
+
     reportWindow.document.write(html);
     reportWindow.document.close();
-    reportWindow.focus();
-    reportWindow.print();
   }
 
   function openMapDatabase() {
@@ -2200,5 +2534,3 @@
     return mapObjectUrl;
   }
 })();
-
-
